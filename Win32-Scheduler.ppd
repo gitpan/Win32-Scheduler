@@ -1,0 +1,21 @@
+<SOFTPKG NAME="Win32-Scheduler" VERSION="0,2000,07,02">
+    <TITLE>Win32::Scheduler</TITLE>
+    <ABSTRACT>The Win32::Scheduler extension for Win32 X86. Manages object MSTask Scheduled tasks.</ABSTRACT>
+	<AUTHOR>Roth Consulting (http://www.roth.net/)</AUTHOR>
+	<IMPLEMENTATION>
+		<OS NAME="MSWin32" />
+		<ARCHITECTURE NAME="MSWin32-x86-object" />
+        <CODEBASE HREF="http://www.roth.net/perl/packages/x86/Win32/Scheduler_5005_AS.tar.gz" />
+	</IMPLEMENTATION>
+  	<IMPLEMENTATION>
+		<OS NAME="MSWin32" />
+		<ARCHITECTURE NAME="MSWin32-x86" />
+        <CODEBASE HREF="http://www.roth.net/perl/packages/x86/Win32/Scheduler_5005.tar.gz" />
+	</IMPLEMENTATION>
+        <IMPLEMENTATION>
+		<OS NAME="MSWin32" />
+		<ARCHITECTURE NAME="MSWin32-x86-multi-thread" />
+        <CODEBASE HREF="http://www.roth.net/perl/packages/x86/Win32/Scheduler_5006.tar.gz" />
+	</IMPLEMENTATION>
+</SOFTPKG>
+

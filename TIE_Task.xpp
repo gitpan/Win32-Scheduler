@@ -1,0 +1,782 @@
+
+typedef struct _TASK_ATTRIBUTE
+{
+    LPTSTR m_pszAttribute;
+    int    m_iIndex;
+} TASK_ATTRIBUTE;
+
+static TASK_ATTRIBUTE spTaskAttributes[] =
+{
+    {   KEYWORD_JOB_ACCOUNT,            INDEX_JOB_ACCOUNT             },
+    {   KEYWORD_JOB_PASSWORD,           INDEX_JOB_PASSWORD            },
+    {   KEYWORD_JOB_COMMENT,            INDEX_JOB_COMMENT             },
+    {   KEYWORD_JOB_CREATOR,            INDEX_JOB_CREATOR             },
+    {   KEYWORD_JOB_RETRY_COUNT,        INDEX_JOB_RETRY_COUNT         },
+    {   KEYWORD_JOB_RETRY_INTERVAL,     INDEX_JOB_RETRY_INTERVAL      },
+    {   KEYWORD_JOB_IDLE_MINUTES,       INDEX_JOB_IDLE_MINUTES        },
+    {   KEYWORD_JOB_DEADLINE_MINUTES,   INDEX_JOB_DEADLINE_MINUTES    },
+    {   KEYWORD_JOB_DATA,               INDEX_JOB_DATA                },
+    {   KEYWORD_JOB_APPLICATION,        INDEX_JOB_APPLICATION         },
+    {   KEYWORD_JOB_EXIT_CODE,          INDEX_JOB_EXIT_CODE           },
+    {   KEYWORD_JOB_MAX_RUN_TIME,       INDEX_JOB_MAX_RUN_TIME        },
+    {   KEYWORD_JOB_FLAGS,              INDEX_JOB_FLAGS               },
+    {   KEYWORD_JOB_DIRECTORY,          INDEX_JOB_DIRECTORY           },
+    {   KEYWORD_JOB_PRIORITY,           INDEX_JOB_PRIORITY            },
+    {   KEYWORD_JOB_PARAMETERS,         INDEX_JOB_PARAMETERS          },
+    {   KEYWORD_JOB_LAST_RUN_TIME,      INDEX_JOB_LAST_RUN_TIME       },
+    {   KEYWORD_JOB_NEXT_RUN_TIME,      INDEX_JOB_NEXT_RUN_TIME       },
+    {   KEYWORD_JOB_RUN_TIMES,          INDEX_JOB_RUN_TIMES           },
+
+    {   NULL,                           INDEX_JOB_BAD_ATTRIBUTE       }
+};
+
+//  #define GET_TASK_INTERFACE(x)   ExtractTaskInterface( PERL_OBJECT_ARGS (x) )
+#define GET_TASK_INTERFACE(x)   (ITask *) HASH_GET_IV( (x), KEYWORD_TASK_INTERFACE );
+/*
+inline ITask* ExtractTaskInterface( PERL_OBJECT_PROTO HV *pHvTiedHash )
+{
+    MAGIC *pMagic = mg_find( (SV*) pHvTiedHash, 'P' );
+    HV *pHv = NULL;
+    ITask *pTask = NULL;
+
+    if( NULL != pMagic )
+    {
+        if( NULL != ( pHv = (HV*) pMagic->mg_obj ) )
+        {
+            pTask = (ITask *) HASH_GET_IV( pHv, KEYWORD_TASK_INTERFACE );
+        }
+    }
+    return( pTask );
+}
+*/
+
+///////////////////////////////////////////////////////////////////////
+//	
+DWORD GetAttributeIndex( LPCTSTR pszAttribute )
+{
+    DWORD dwIndex = 0;
+
+    while( NULL != spTaskAttributes[ dwIndex ].m_pszAttribute )
+    {
+        if( 0 == _tcsicmp( spTaskAttributes[ dwIndex ].m_pszAttribute, pszAttribute ) )
+        {
+            return( dwIndex );
+        }
+        ++dwIndex;
+    }
+    return( INDEX_JOB_BAD_ATTRIBUTE );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+HRESULT SaveTask( ITask *pTask )
+{
+    IPersistFile *pPersistFile;
+    HRESULT hr = S_FALSE;
+
+    if( NULL != pTask )
+    {
+        if( SUCCEEDED( pTask->QueryInterface( IID_IPersistFile, (void **) &pPersistFile ) ) )
+        {
+            hr = pPersistFile->Save( NULL, TRUE );
+
+            // Release the IPersistFile interface.
+            pPersistFile->Release();
+        }
+    }
+    return( hr );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+DWORD SystemTimeToCTime( SYSTEMTIME *psTime )
+{
+    time_t  c_TimeValue = 0;
+    struct tm c_sTime;
+
+    ZeroMemory( &c_sTime, sizeof( c_sTime ) );
+
+    c_sTime.tm_sec  = psTime->wSecond;
+    c_sTime.tm_min  = psTime->wMinute;
+    c_sTime.tm_hour = psTime->wHour;
+    c_sTime.tm_mday = psTime->wDay;
+    c_sTime.tm_mon  = psTime->wMonth - 1;
+    c_sTime.tm_year = psTime->wYear - 1900;
+
+    return( mktime( &c_sTime ) );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+HRESULT ModifyTask( PERL_OBJECT_PROTO ITask *pTask, HV *pHv )
+{
+    CUString szuBuffer;
+    LPTSTR pszAttributeKeyName = NULL;
+    LPTSTR pszBuffer = NULL;
+    DWORD dwBuffer = 0;
+    DWORD dwKeyLen = 0;
+    WORD  wBuffer = 0;
+    HRESULT hr = ERROR_SUCCESS;
+    enum { Unknown, String, Dword } eValueType = Unknown;
+    SV *pSv;
+
+    if( ( NULL == pTask ) || ( NULL == pHv ) )
+    {
+        return( S_FALSE );
+    }
+    hv_iterinit( pHv );
+
+    while( ( SUCCEEDED( hr ) && ( NULL != hv_iternextsv( pHv, &pszAttributeKeyName, (long*) &dwKeyLen ) ) ) )
+    {
+        switch( GetAttributeIndex( pszAttributeKeyName ) )
+        {
+    
+        case INDEX_JOB_ACCOUNT:
+            if( SUCCEEDED( hr ) )
+            {
+                CUString szuBuffer2;
+
+                szuBuffer = HASH_GET_PV( pHv, KEYWORD_JOB_ACCOUNT );
+                szuBuffer2 = HASH_GET_PV( pHv, KEYWORD_JOB_PASSWORD );
+                hr = pTask->SetAccountInformation( szuBuffer, szuBuffer2 );
+            }
+            break;
+
+        case INDEX_JOB_PASSWORD:
+            if( ! HASH_KEY_EXISTS( pHv, KEYWORD_JOB_ACCOUNT ) )
+            {
+                LPWSTR pszwAccount;
+
+                hr = pTask->GetAccountInformation( &pszwAccount );
+                if( SUCCEEDED( hr ) )
+                {
+                    szuBuffer = HASH_GET_PV( pHv, KEYWORD_JOB_PASSWORD );
+                    hr = pTask->SetAccountInformation( pszwAccount, szuBuffer );
+                    CoTaskMemFree( pszwAccount );
+                }
+            }
+            break;
+
+        case INDEX_JOB_COMMENT:
+            if( SUCCEEDED( hr ) )
+            {
+                szuBuffer = HASH_GET_PV( pHv, KEYWORD_JOB_COMMENT );
+                hr = pTask->SetComment( szuBuffer );
+            }
+            break;
+
+        case INDEX_JOB_CREATOR:
+            if( SUCCEEDED( hr ) )
+            {
+                szuBuffer = HASH_GET_PV( pHv, KEYWORD_JOB_CREATOR );
+                hr = pTask->SetCreator( szuBuffer );
+            }
+            break;
+/*
+        //  WinNT/2000 does not currently implement this method (as per the SDK).
+
+        case INDEX_JOB_RETRY_COUNT:
+            if( SUCCEEDED( hr ) )
+            {
+                dwBuffer = HASH_GET_IV( pHv, KEYWORD_JOB_RETRY_COUNT );
+                hr = pTask->SetErrorRetryCount( dwBuffer );
+            }
+            break;
+*/
+
+/*
+        //  WinNT/2000 does not currently implement this method (as per the SDK).
+
+        case INDEX_JOB_RETRY_INTERVAL:
+            if( SUCCEEDED( hr ) )
+            {
+                dwBuffer = HASH_GET_IV( pHv, KEYWORD_JOB_RETRY_INTERVAL );
+                pTask->SetErrorRetryInterval( dwBuffer );
+            }
+            break;
+*/
+        case INDEX_JOB_IDLE_MINUTES:
+            if( SUCCEEDED( hr ) )
+            {
+                DWORD dwBuffer2;
+
+                dwBuffer = HASH_GET_IV( pHv, KEYWORD_JOB_IDLE_MINUTES );
+                dwBuffer2 = HASH_GET_IV( pHv, KEYWORD_JOB_DEADLINE_MINUTES );
+                hr = pTask->SetIdleWait( dwBuffer, dwBuffer2 );
+            }
+            break;
+
+        case INDEX_JOB_DEADLINE_MINUTES:
+            if( SUCCEEDED( hr ) )
+            {
+                DWORD dwBuffer2;
+
+                dwBuffer = HASH_GET_IV( pHv, KEYWORD_JOB_IDLE_MINUTES );
+                dwBuffer2 = HASH_GET_IV( pHv, KEYWORD_JOB_DEADLINE_MINUTES );
+                hr = pTask->SetIdleWait( dwBuffer, dwBuffer2 );
+            }
+            break;
+
+        case INDEX_JOB_DATA:
+            break;
+
+        //  Read only value
+        case INDEX_JOB_LAST_RUN_TIME:
+            break;
+
+        //  Read only value
+        case INDEX_JOB_NEXT_RUN_TIME:
+            break;
+
+        //  Read only value
+        case INDEX_JOB_RUN_TIMES:
+            break;
+
+        case INDEX_JOB_APPLICATION:
+            if( SUCCEEDED( hr ) )
+            {
+                szuBuffer = HASH_GET_PV( pHv, KEYWORD_JOB_APPLICATION );
+                hr = pTask->SetApplicationName( szuBuffer );
+            }
+            break;
+
+        case INDEX_JOB_EXIT_CODE:
+            break;
+
+        case INDEX_JOB_MAX_RUN_TIME:
+            if( SUCCEEDED( hr ) )
+            {
+                dwBuffer = HASH_GET_IV( pHv, KEYWORD_JOB_MAX_RUN_TIME );
+                pTask->SetMaxRunTime( dwBuffer );
+            }
+            break;
+
+        case INDEX_JOB_FLAGS:
+            if( SUCCEEDED( hr ) )
+            {
+                dwBuffer = HASH_GET_IV( pHv, KEYWORD_JOB_FLAGS );
+                pTask->SetFlags( dwBuffer );
+            }
+            break;
+
+        case INDEX_JOB_DIRECTORY:
+            if( SUCCEEDED( hr ) )
+            {
+                szuBuffer = HASH_GET_PV( pHv, KEYWORD_JOB_DIRECTORY );
+                hr = pTask->SetWorkingDirectory( szuBuffer );
+            }
+            break;
+
+        case INDEX_JOB_PRIORITY:
+            if( SUCCEEDED( hr ) )
+            {
+                dwBuffer = HASH_GET_IV( pHv, KEYWORD_JOB_PRIORITY );
+                pTask->SetPriority( dwBuffer );
+            }
+            break;
+
+        case INDEX_JOB_PARAMETERS:
+            if( SUCCEEDED( hr ) )
+            {
+                szuBuffer = HASH_GET_PV( pHv, KEYWORD_JOB_PARAMETERS );
+                hr = pTask->SetParameters( szuBuffer );
+            }
+            break;
+
+        case INDEX_JOB_BAD_ATTRIBUTE:
+        default:
+            //  OOohh bad!
+        
+            break;
+        }
+    }
+
+    return( hr );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_Task_TIE_FETCH)
+{
+	dXSARGS;
+	EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITask   *pTask = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	LPTSTR pszName = NULL;
+    SV *pSvResult = NULL;
+		
+	if (items != 2)
+	{
+		croak("Usage: " EXTENSION  "::Task::TIEFETCH( $Self, $Key )\n");
+    }
+		
+    //	FETCH	
+	pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pszName = SvPV( ST( 1 ), na );
+	
+    pTask = GET_TASK_INTERFACE( pHvSelf );
+    if( NULL != pTask )
+    {
+        CUString szuBuffer( pszName );
+        LPTSTR pszAttributeKeyName = NULL;
+        LPTSTR pszBuffer = NULL;
+        LPWSTR pszwBuffer = NULL;
+        DWORD dwBuffer = 0;
+        WORD  wBuffer = 0;
+        AV *pAv = NULL;
+        enum { Unknown, String, Dword, Array } eValueType = Unknown;
+
+        switch( GetAttributeIndex( pszName ) )
+        {
+            case INDEX_JOB_ACCOUNT:
+                if( SUCCEEDED( pTask->GetAccountInformation( &pszwBuffer ) ) )
+                {
+                    szuBuffer = pszwBuffer;
+                    pszAttributeKeyName = KEYWORD_JOB_ACCOUNT;
+                    CoTaskMemFree ( pszBuffer );
+                    eValueType = String;
+                }
+                break;
+
+            case INDEX_JOB_PASSWORD:
+                break;
+
+            case INDEX_JOB_LAST_RUN_TIME:
+                {
+                    SYSTEMTIME sTime;
+
+                    ZeroMemory( &sTime, sizeof( sTime ) );
+                    if( SUCCEEDED( pTask->GetMostRecentRunTime( &sTime ) ) )
+                    {
+                        dwBuffer = SystemTimeToCTime( &sTime );
+                        pszAttributeKeyName = KEYWORD_JOB_LAST_RUN_TIME;
+                        eValueType = Dword;        
+                    }
+                }
+                break;
+
+            case INDEX_JOB_RUN_TIMES:
+                {
+                    SYSTEMTIME sTime;
+                    SYSTEMTIME *psTime = NULL;
+                    WORD wCount = TOTAL_RUN_TIME_TO_FETCH;
+                    
+                    ZeroMemory( &sTime, sizeof( sTime ) );
+                    GetSystemTime( &sTime );
+
+                    if( SUCCEEDED( pTask->GetRunTimes( &sTime, NULL, &wCount, (SYSTEMTIME **) &psTime ) ) )
+                    {
+                        pAv = newAV();
+                        if( NULL != pAv )
+                        {
+                            DWORD dwIndex = 0;
+                            while( dwIndex < wCount )
+                            {
+                                dwBuffer = SystemTimeToCTime( &psTime[ dwIndex++ ] );
+                                ARRAY_PUSH_IV( pAv, dwBuffer );
+                            }
+                            pszAttributeKeyName = KEYWORD_JOB_LAST_RUN_TIME;
+                            eValueType = Array;
+                        }
+                        CoTaskMemFree( psTime );
+                    }
+                }
+                break;
+
+            case INDEX_JOB_NEXT_RUN_TIME:
+                {
+                    SYSTEMTIME sTime;
+
+                    ZeroMemory( &sTime, sizeof( sTime ) );
+                    if( SUCCEEDED( pTask->GetNextRunTime( &sTime ) ) )
+                    {
+                        dwBuffer = SystemTimeToCTime( &sTime );
+                        pszAttributeKeyName = KEYWORD_JOB_NEXT_RUN_TIME;
+                        eValueType = Dword;        
+                    }
+                }
+                break;
+
+            case INDEX_JOB_COMMENT:
+                if( SUCCEEDED( pTask->GetComment( &pszwBuffer ) ) )
+                {
+                    szuBuffer = pszwBuffer;
+                    pszAttributeKeyName = KEYWORD_JOB_COMMENT;
+                    CoTaskMemFree ( pszBuffer );
+                    eValueType = String;
+                }
+                break;
+
+            case INDEX_JOB_CREATOR:
+                if( SUCCEEDED( pTask->GetCreator( &pszwBuffer ) ) )
+                {
+                    szuBuffer = pszwBuffer;
+                    pszAttributeKeyName = KEYWORD_JOB_CREATOR;
+                    CoTaskMemFree ( pszBuffer );
+                    eValueType = String;
+                }
+                break;
+
+/*
+            //  WinNT/2000 does not currently implement this method (as per the SDK).
+            case INDEX_JOB_RETRY_COUNT:
+                if( SUCCEEDED( pTask->GetErrorRetryCount( &wBuffer ) ) )
+                {
+                    pszAttributeKeyName = KEYWORD_JOB_RETRY_COUNT;
+                    dwBuffer = wBuffer;
+                    eValueType = Dword;
+                }
+                break;
+*/
+/*
+            //  WinNT/2000 does not currently implement this method (as per the SDK).
+            case INDEX_JOB_RETRY_INTERVAL:
+                if( SUCCEEDED( pTask->GetErrorRetryInterval( &wBuffer ) ) )
+                {
+                    pszAttributeKeyName = KEYWORD_JOB_RETRY_INTERVAL;
+                    dwBuffer = wBuffer;
+                    eValueType = Dword;
+                }
+                break;
+*/
+
+            case INDEX_JOB_IDLE_MINUTES:
+                {
+                    WORD wBuffer2;
+                    if( SUCCEEDED( pTask->GetIdleWait( &wBuffer, &wBuffer2  ) ) )
+                    {
+                        pszAttributeKeyName = KEYWORD_JOB_IDLE_MINUTES;
+                        dwBuffer = wBuffer;
+                        eValueType = Dword;
+                    }
+                }
+                break;
+
+            case INDEX_JOB_DEADLINE_MINUTES:
+                {
+                    WORD wBuffer2;
+                    if( SUCCEEDED( pTask->GetIdleWait( &wBuffer, &wBuffer2  ) ) )
+                    {
+                        pszAttributeKeyName = KEYWORD_JOB_DEADLINE_MINUTES;
+                        dwBuffer = wBuffer2;
+                        eValueType = Dword;
+                    }
+                }
+                break;
+
+            case INDEX_JOB_DATA:
+                break;
+
+            case INDEX_JOB_APPLICATION:
+                if( SUCCEEDED( pTask->GetApplicationName( &pszwBuffer ) ) )
+                {
+                    szuBuffer = pszwBuffer;
+                    pszAttributeKeyName = KEYWORD_JOB_APPLICATION;
+                    CoTaskMemFree ( pszBuffer );
+                    eValueType = String;
+                }
+                break;
+
+            case INDEX_JOB_EXIT_CODE:
+                if( SUCCEEDED( pTask->GetExitCode( &dwBuffer ) ) )
+                {
+                    pszAttributeKeyName = KEYWORD_JOB_EXIT_CODE;
+                    eValueType = Dword;
+                }
+                break;
+
+            case INDEX_JOB_MAX_RUN_TIME:
+                if( SUCCEEDED( pTask->GetMaxRunTime( &dwBuffer ) ) )
+                {
+                    pszAttributeKeyName = KEYWORD_JOB_MAX_RUN_TIME;
+                    eValueType = Dword;
+                }
+                break;
+
+            case INDEX_JOB_FLAGS:
+                if( SUCCEEDED( pTask->GetFlags( &dwBuffer ) ) )
+                {
+                    pszAttributeKeyName = KEYWORD_JOB_FLAGS;
+                    eValueType = Dword;
+                }
+                break;
+
+            case INDEX_JOB_DIRECTORY:
+                if( SUCCEEDED( pTask->GetWorkingDirectory( &pszwBuffer ) ) )
+                {
+                    szuBuffer = pszwBuffer;
+                    pszAttributeKeyName = KEYWORD_JOB_DIRECTORY;
+                    CoTaskMemFree ( pszBuffer );
+                    eValueType = String;
+                }
+                break;
+
+            case INDEX_JOB_PRIORITY:
+                if( SUCCEEDED( pTask->GetPriority( &dwBuffer ) ) )
+                {
+                    pszAttributeKeyName = KEYWORD_JOB_PRIORITY;
+                    eValueType = Dword;
+                }
+                break;
+
+            case INDEX_JOB_PARAMETERS:
+                if( SUCCEEDED( pTask->GetParameters( &pszwBuffer ) ) )
+                {
+                    szuBuffer = pszwBuffer;
+                    pszAttributeKeyName = KEYWORD_JOB_PARAMETERS;
+                    CoTaskMemFree ( pszBuffer );
+                    eValueType = String;
+                }
+                break;
+
+            case INDEX_JOB_BAD_ATTRIBUTE:
+            default:
+                //  OOohh bad!
+                
+                break;
+        }
+/*
+        if( NULL != pHv )
+        {
+            switch( eValueType )
+            {
+            case String:
+                HASH_STORE_PV( pHv, pszAttributeKeyName, (LPTSTR) pszuBuffer );
+                break;
+
+            case Dword:
+                HASH_STORE_IV( pHv, pszAttributeKeyName, (DWORD) dwBuffer );
+                dwBuffer = 0;
+                break;
+            
+            case Array:
+                HASH_STORE_AV( pHv, pszAttributeKeyName, pAv );
+                pAv = NULL;
+                break;
+
+            }
+
+        }
+        else
+*/
+        {
+            switch( eValueType )
+            {
+            case String:
+                PUSH_PV( (LPTSTR) szuBuffer );
+                break;
+
+            case Dword:
+                PUSH_IV( dwBuffer );
+                break;
+
+            case Array:
+                PUSH_AV( pAv );
+                break;
+            }
+        }
+    }
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS( XS_Win32__Scheduler_Task_TIE_STORE )
+{
+	dXSARGS;
+	EXTENSION_VARS;
+    HV      *pHv = NULL;
+    HV		*pHvSelf;
+    ITask   *pTask = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	LPTSTR pszName = NULL;
+    SV *pSvResult = NULL;
+		
+	if (items != 2)
+	{
+		croak("Usage: " EXTENSION  "::Task::TIESTORE( $Self, $Key, [ $Value | \\%Hash ] )\n");
+    }
+		
+    //	FETCH	
+	pHvSelf = (HV*) SvRV( ST( 0 ) );
+    if( NULL == ( pHv = EXTRACT_HV( ST( 2 ) ) ) )
+    {
+        //  If a hash reference was not passed in then let's
+        //  create a temporary one so that later it is easier to
+        //  iterate through the hash keys. Otherwise we will have
+        //  to have code for a hash and other code for scalar.
+        if( NULL != ( pHv = newHV() )  )
+        {
+            HASH_STORE_SVNOREF( pHv, SvPV( ST( 1 ), na ), ST( 2 ) );
+        }
+    }
+
+    //  NOTE: If we passed in a hash reference then the key is
+    //        ignored. We will use the keys and values from the
+    //        hash.
+	
+    pTask = GET_TASK_INTERFACE( pHvSelf );
+    if( NULL != pTask )
+    {
+
+        HRESULT hr = ModifyTask( PERL_OBJECT_ARGS pTask, pHv );
+        if( SUCCEEDED( hr ) )
+        {
+            if( SUCCEEDED( SaveTask( pTask ) ) )
+            {
+                PUSH_IV( 1 );
+            }
+        }
+    }
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_Task_TIE_FIRSTKEY)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITask   *pTask = NULL;
+	
+	if( 1 != items )
+	{
+		croak( "Usage: " EXTENSION  "::Task::FIRSTKEY( $Self )\n" );
+    }
+
+	pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pTask = GET_TASK_INTERFACE( pHvSelf );
+    if( NULL != pTask )
+    { 
+        PUSH_PV( spTaskAttributes[ 0 ].m_pszAttribute );
+    }
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_Task_TIE_NEXTKEY)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITask   *pTask = NULL;
+	LPTSTR pszPreviousKey = NULL;
+	
+	if( 2 != items )
+	{
+		croak( "Usage: " EXTENSION  "::Task::NEXTKEY( $Self, $PreviousKey )\n" );
+    }
+
+	pszPreviousKey = SvPV( ST( 1 ), na );
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pTask = GET_TASK_INTERFACE( pHvSelf );
+    if( NULL != pTask )
+    { 
+        DWORD dwIndex = GetAttributeIndex( pszPreviousKey );
+        if( ( INDEX_JOB_BAD_ATTRIBUTE != dwIndex++ )
+            && ( NULL != spTaskAttributes[ dwIndex ].m_pszAttribute ) )
+        {
+            PUSH_PV( spTaskAttributes[ dwIndex ].m_pszAttribute );
+        }
+    }
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_Task_TIE_EXISTS)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITask   *pTask = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    LPTSTR pszKey = NULL;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	
+	if( 2 != items )
+	{
+		croak( "Usage: " EXTENSION  "::Task::EXISTS( $Self, $Key )\n" );
+    }
+
+	pszKey  = SvPV( ST( 1 ), na);
+
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pTask = GET_TASK_INTERFACE( pHvSelf );
+
+
+    if( NULL != pTask )
+    {
+        if( INDEX_JOB_BAD_ATTRIBUTE != GetAttributeIndex( pszKey ) )
+        {
+            fResult = TRUE;
+        }
+    }
+        
+    EXTENSION_RETURN_BOOL( fResult );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_Task_TIE_DELETE)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITask   *pTask = NULL;
+    HRESULT hr = S_FALSE;
+    CUString szuName;
+	
+	if( 2 != items )
+	{
+		croak( "Usage: " EXTENSION  "::Task::DELETE( $Self, $Key )\n" );
+    }
+
+	//	DELETE	
+	pHvSelf = (HV*) SvRV( ST( 0 ) );
+	szuName = SvPV( ST( 1 ), na);
+
+    pTask = GET_TASK_INTERFACE( pHvSelf );
+    if( NULL != pTask )
+    {
+        //hr = pTask->Delete( szuName );
+
+        // Here we must set the szuName attribute to 0 or ""
+    }
+
+    EXTENSION_RETURN_BOOL( SUCCEEDED( hr ) );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_Task_TIE_DESTROY)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITask   *pTask = NULL;
+	
+	if( 1 != items )
+	{
+		croak( "Usage: " EXTENSION  "::Task::DESTROY( $Self )\n" );
+    }
+    
+	//	DESTROY
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pTask = GET_TASK_INTERFACE( pHvSelf );
+    if( NULL != pTask )
+    {
+        pTask->Release();
+        HASH_STORE_IV( pHvSelf, KEYWORD_TASK_INTERFACE, 0 );
+    }
+
+    XSRETURN_EMPTY;
+}

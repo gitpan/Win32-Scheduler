@@ -1,0 +1,661 @@
+
+/////////////////////////////////////////////////////////////////////////////////
+//  
+//  Magic Hash Code
+//
+SV *TieTask( PERL_OBJECT_PROTO ITask *pTask )
+{
+	HV	*pHvTiedHash = newHV();
+    SV	*pSvMagic;
+	SV	*pSvRef = &sv_undef;
+    SV  *pSvBlessed = NULL;
+
+
+    //  We are creating two hashes. One with be the blessed hash that contains named/value
+    //  pairs regarding the blessed object (such as the ITask interface).
+    //  This hash we bless into the Win32::Scheduler::Task class...
+	if( ( NULL != pTask ) && ( NULL != pHvTiedHash ) )
+	{
+        HV  *pHvBlessedHash = newHV();
+  
+        if( NULL != pHvBlessedHash )
+        {
+            HASH_STORE_IV( pHvBlessedHash, KEYWORD_TASK_INTERFACE, pTask );
+
+   	        pSvBlessed = sv_bless( newRV_noinc( (SV*) pHvBlessedHash ), gv_stashpv( EXTENSION TEXT( "::Task" ), TRUE ) );
+
+            //  Now that we have a blessed hash (acting as our little data container) we
+            //  apply magic to another hash so that it will act as the tied hash. We will
+            //  associate the blessed object with this so that Perl knows where to go to
+            //  call the TIEDxxxx() functions.
+            sv_magic( (SV*) pHvTiedHash, pSvBlessed, 'P', Nullch, 0 );
+	        
+	        //  At this point we have a tied hash that is associated with a
+            //  blessed hash.  When the TIEDxxxx() functions are called the first
+            //  parameter passed in will be the blessed hash.  We can
+            //  access the contents of this blessed hash directly without fear that
+            //  it will trigger the tied hash and recursively call a TIEDxxxx() function!
+            
+
+            // When applying magic if the tied hash is not the same as the associated hash
+            // (pSvBlessed) then the blessed hash's ref count is increased. Not good...
+          	SvREFCNT_dec( (SV*) pSvBlessed );
+        }
+    }
+
+	return( (SV*) pHvTiedHash );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS( XS_Win32__Scheduler_TIE_HASH )
+{
+	dXSARGS;
+    EXTENSION_VARS;
+	HV	*phvObject = NULL;
+	SV	*psvSelf   = NULL;
+	SV	*psvResult = NULL;
+		
+
+    //  Maybe here we should allow you to connect to a remote machine??
+	if( ( 1 > items ) || ( 2 < items  ) )
+	{
+		croak( "Usage: " EXTENSION  "::TIEHASH( $Self [, $Machine ] )\n" );
+    }
+
+	psvSelf = ST( 0 );
+	
+	phvObject = newHV();
+    if( NULL != phvObject )
+	{
+        ITaskScheduler *pITS = NULL;
+        HRESULT hr = CoCreateInstance( CLSID_CTaskScheduler,
+                                        NULL,
+                                        CLSCTX_INPROC_SERVER,
+                                        IID_ITaskScheduler,
+                                        (void **) &pITS );
+        if( SUCCEEDED( hr ) )
+        {
+            if( 2 == items )
+            {
+                LPTSTR pszMachine = SvPV( ST( 1 ), na );
+                DWORD dwTemp;
+
+                dwTemp = _tcsspn( pszMachine, TEXT( "\\/" ) );
+                pszMachine = &pszMachine[ dwTemp ];
+                if( 0 != _tcscmp( pszMachine, TEXT( "" ) ) )
+                {
+                    TCHAR szBuffer[ 100 ];
+                    CUString szuMachine;    
+
+                    _tcscpy( szBuffer, TEXT( "\\\\" ) );
+                    _tcscat( szBuffer, pszMachine );
+                    szuMachine = szBuffer;
+                    hr = pITS->SetTargetComputer( szuMachine );
+                }
+            }
+
+            if( SUCCEEDED( hr ) )
+            {
+                HASH_STORE_IV( phvObject, KEYWORD_SCHEDULER_INTERFACE, pITS );
+    		    psvResult = sv_bless( sv_2mortal( newRV_noinc( (SV*) phvObject ) ), 
+                                      gv_stashpv( EXTENSION , TRUE ) );
+            }
+        }
+	}
+		
+	if( NULL != psvResult )
+	{
+        PUSH_NOREF( psvResult );
+	}
+
+	EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_TIE_FETCH)
+{
+	dXSARGS;
+	EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITaskScheduler *pITS = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	LPTSTR pszName = NULL;
+    SV *pSvResult = NULL;
+		
+	if (items != 2)
+	{
+		croak("Usage: " EXTENSION  "::TIEFETCH( $Self, $Key )\n");
+    }
+		
+    //	FETCH	
+	pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pszName = SvPV( ST( 1 ), na );
+	
+    pITS = (ITaskScheduler *) HASH_GET_IV( pHvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( NULL != pITS )
+    {
+        CUString szuBuffer( pszName );
+        ITask *pTask = NULL;    
+
+        if( SUCCEEDED( pITS->Activate( szuBuffer, IID_ITask, (IUnknown**) &pTask ) ) )
+        {
+            //   Here we should create a new object and make it magic...
+            pSvResult = TieTask( PERL_OBJECT_ARGS pTask );
+
+	        if( NULL != pSvResult )
+	        {
+                PUSH_REF( pSvResult );
+	        }
+        }
+    }
+
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS( XS_Win32__Scheduler_TIE_STORE )
+{
+	dXSARGS;
+	EXTENSION_VARS;
+    HV		*pHvSelf;
+    HV      *pHv;
+    ITaskScheduler *pITS = NULL;
+    ITask          *pTask = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	LPTSTR pszName = NULL;
+	
+	if( 3 != items )
+	{
+		croak( "Usage: " EXTENSION  "::TIESTORE( $Self, $Key, [ $Task | \\%Job ] )\n" );
+    }
+
+	pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pszName = SvPV( ST( 1 ), na );
+	if( NULL != ( pHv = EXTRACT_HV( ST( 2 ) ) ) )
+    {
+        // If we get here then the Win32::Scheduler::Task object is
+        //  recognized as a hash.
+        if( sv_isa( (SV*) pHv, EXTENSION TEXT( "::Task" ) ) )
+        {
+            pTask = (ITask *) HASH_GET_IV( pHv, KEYWORD_TASK_INTERFACE );
+            //  pTask = (ITask *) 
+        }        
+    }
+    
+    pITS = (ITaskScheduler *) HASH_GET_IV( pHvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( ( NULL != pITS ) && ( NULL != pHv ) )
+    {
+        CUString szuBuffer( pszName );
+        //  IScheduledWorkItem *pWorkItem = NULL;
+        ITask *pTask = NULL;
+        BOOL fNewTask = FALSE;
+
+        //  First check if the element already exists. If so then modify it
+        //  otherwise create a new task
+        hr = pITS->Activate( szuBuffer, IID_ITask, (IUnknown**) &pTask );
+        if( FAILED( hr ) )
+        {
+            hr = pITS->NewWorkItem( szuBuffer, CLSID_CTask, IID_ITask, (IUnknown**) &pTask );
+            fNewTask = TRUE;
+        }
+
+        if( SUCCEEDED( hr ) )
+        {
+            HRESULT hr = ModifyTask( PERL_OBJECT_ARGS pTask, pHv );
+            if( SUCCEEDED( hr ) )
+            {
+                if( SUCCEEDED( SaveTask( pTask ) ) )
+                {
+                    PUSH_IV( 1 );
+                }
+            }
+/*
+            CUString szuBuffer2;
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_ACCOUNT ) ) )
+            {
+                szuBuffer = HASH_GET_PV( pHvJob, KEYWORD_JOB_ACCOUNT );
+                szuBuffer2 = HASH_GET_PV( pHvJob, KEYWORD_JOB_PASSWORD );
+                hr = pTask->SetAccountInformation( szuBuffer, szuBuffer2 );
+            }
+
+            if( SUCCEEDED( hr ) 
+                && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_PASSWORD ) ) 
+                && ( ! HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_ACCOUNT ) )
+                && ( NULL != pTask ) )
+            {
+                LPWSTR pszwAccount = NULL;
+
+                if( SUCCEEDED( pTask->GetAccountInformation( &pszwAccount ) ) )
+                {
+                    szuBuffer2 = HASH_GET_PV( pHvJob, KEYWORD_JOB_PASSWORD );
+                    hr = pTask->SetAccountInformation( pszwAccount, szuBuffer2 );
+                    CoTaskMemFree( pszwAccount );
+                }
+            }
+        
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_COMMENT ) ) )
+            {
+                szuBuffer = HASH_GET_PV( pHvJob, KEYWORD_JOB_COMMENT );
+                hr = pTask->SetComment( szuBuffer );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_CREATOR ) ) )
+            {
+                szuBuffer = HASH_GET_PV( pHvJob, KEYWORD_JOB_CREATOR );
+                hr = pTask->SetCreator( szuBuffer );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_RETRY_COUNT ) ) )
+            {
+                WORD wRetryCount = (WORD) HASH_GET_IV( pHvJob, KEYWORD_JOB_RETRY_COUNT );
+                hr = pTask->SetErrorRetryCount( wRetryCount );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_RETRY_INTERVAL ) ) )
+            {
+                WORD wRetryInterval = (WORD) HASH_GET_IV( pHvJob, KEYWORD_JOB_RETRY_INTERVAL );
+                hr = pTask->SetErrorRetryInterval( wRetryInterval );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_FLAGS ) ) )
+            {
+                DWORD dwFlags = HASH_GET_IV( pHvJob, KEYWORD_JOB_FLAGS );
+                hr = pTask->SetFlags( dwFlags );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_CREATOR ) ) )
+            {
+                WORD wIdleMinutes = HASH_GET_IV( pHvJob, KEYWORD_JOB_IDLE_MINUTES );
+                WORD wDeadlineMinutes = HASH_GET_IV( pHvJob, KEYWORD_JOB_DEADLINE_MINUTES );
+                hr = pTask->SetIdleWait( wIdleMinutes, wDeadlineMinutes );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_DATA ) ) )
+            {
+                SV* pSv = HASH_GET_SV( pHvJob, KEYWORD_JOB_DATA );
+                PBYTE pData = (PBYTE) SvPV( pSv, na );
+                DWORD dwDataLength = SvLEN( pSv );
+                hr = pTask->SetWorkItemData( dwDataLength, (BYTE*) pData );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_APPLICATION ) ) )
+            {
+                szuBuffer = HASH_GET_PV( pHvJob, KEYWORD_JOB_APPLICATION );
+                hr = pTask->SetApplicationName( szuBuffer );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_DIRECTORY ) ) )
+            {
+                szuBuffer = HASH_GET_PV( pHvJob, KEYWORD_JOB_DIRECTORY );
+                hr = pTask->SetWorkingDirectory( szuBuffer );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_PRIORITY ) ) )
+            {
+                DWORD dwPriority = HASH_GET_IV( pHvJob, KEYWORD_JOB_PRIORITY );
+                hr = pTask->SetPriority( dwPriority );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_MAX_RUN_TIME ) ) )
+            {
+                DWORD dwMaxRunTime = HASH_GET_IV( pHvJob, KEYWORD_JOB_MAX_RUN_TIME );
+                hr = pTask->SetMaxRunTime( dwMaxRunTime );
+            }
+
+            if( SUCCEEDED( hr ) && ( HASH_KEY_EXISTS( pHvJob, KEYWORD_JOB_PARAMETERS ) ) )
+            {
+                szuBuffer = HASH_GET_PV( pHvJob, KEYWORD_JOB_PARAMETERS );
+                hr = pTask->SetParameters( szuBuffer );
+            }
+*/
+            if( SUCCEEDED( hr ) )
+            {
+                if( TRUE == fNewTask )
+                {
+                    szuBuffer = pszName;
+                    if( SUCCEEDED( pITS->AddWorkItem( szuBuffer, pTask ) ) )
+                    {
+                        fResult = TRUE;
+                    }
+                }
+                else
+                {
+                    fResult = TRUE;
+                }
+            }
+        
+            if( TRUE == fResult )
+            {
+                PUSH_IV( 1 );
+            }
+
+            pTask->Release();
+        }
+    }
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_TIE_FIRSTKEY)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITaskScheduler *pITS = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	LPTSTR pszPreviousKey = NULL;
+	
+	if( 1 != items )
+	{
+		croak( "Usage: " EXTENSION  "::FIRSTKEY( $Self )\n" );
+    }
+
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pITS = (ITaskScheduler *) HASH_GET_IV( pHvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( NULL != pITS )
+    {
+        IEnumWorkItems *pEnum = NULL;
+        if( SUCCEEDED( pITS->Enum( &pEnum ) ) )
+        {
+            
+            LPWSTR *pszwNames;
+            DWORD dwTasks = 0;
+            DWORD dwTasksToFetch = 1;
+            CUString szuName;
+            BOOL fFound = FALSE;
+
+            if( SUCCEEDED( pEnum->Next( dwTasksToFetch,
+                                            &pszwNames,
+                                            &dwTasks ) )
+                                        && ( 0 != dwTasks ) )
+            {
+                DWORD dwCount;
+
+                szuName = pszwNames[ 0 ];
+                CoTaskMemFree( pszwNames[ 0 ] );
+
+//                if( 0 == ( dwCount = FindSubString( szuName, TEXT( ".job" ) ) ) )
+                {
+                    dwCount = _tcslen( (LPTSTR) szuName );
+                }
+                PUSH_PNV( (LPTSTR) szuName, dwCount );
+            }
+            CoTaskMemFree( pszwNames );
+            pEnum->Release();
+        }    
+    }
+
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_TIE_NEXTKEY)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITaskScheduler *pITS = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	LPTSTR pszPreviousKey = NULL;
+	
+	if( 2 != items )
+	{
+		croak( "Usage: " EXTENSION  "::NEXTKEY( $Self, $PreviousKey )\n" );
+    }
+
+	pszPreviousKey = SvPV( ST( 1 ), na );
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pITS = (ITaskScheduler *) HASH_GET_IV( pHvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( NULL != pITS )
+    {
+        IEnumWorkItems *pEnum = NULL;
+        if( SUCCEEDED( pITS->Enum( &pEnum ) ) )
+        {
+            
+            LPWSTR *pszwNames;
+            DWORD dwTasks = 0;
+            DWORD dwTasksToFetch = TOTAL_TASKS_TO_RETRIEVE;
+            CUString szuName;
+            BOOL fFound = FALSE;
+
+            while( SUCCEEDED( pEnum->Next( dwTasksToFetch,
+                                            &pszwNames,
+                                            &dwTasks ) )
+                                        && ( 0 != dwTasks )
+                                        && ( FALSE == fResult ) )
+            {
+                DWORD dwIndex = 0;
+                while( dwIndex < dwTasks )
+                {
+                    szuName = pszwNames[ dwIndex ];
+                    CoTaskMemFree( pszwNames[ dwIndex++ ] );
+
+                    if( TRUE == fFound )
+                    {
+                        DWORD dwCount;
+                        fResult = TRUE; 
+//                        if( 0 == ( dwCount = FindSubString( szuName, TEXT( ".job" ) ) ) )
+                        {
+                            dwCount = _tcslen( (LPTSTR) szuName );
+                        }
+                        PUSH_PNV( (LPTSTR) szuName, dwCount );
+
+                        while( dwIndex < dwTasks )
+                        {
+                            CoTaskMemFree( pszwNames[ dwIndex++ ] );
+                        }
+                        break;
+                    }
+                    else if( 0 == _tcsicmp( szuName, pszPreviousKey ) )
+                    {
+                        fFound = TRUE;
+                    }
+                }
+                CoTaskMemFree( pszwNames );
+            }
+            pEnum->Release();
+        }    
+    }
+    EXTENSION_RETURN;
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_TIE_EXISTS)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITaskScheduler *pITS = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    LPTSTR pszKey = NULL;
+    DWORD dwTotal = 0;
+    BOOL fResult = FALSE;
+	
+	if( 2 != items )
+	{
+		croak( "Usage: " EXTENSION  "::EXISTS( $Self, $Key )\n" );
+    }
+
+	pszKey  = SvPV( ST( 1 ), na);
+
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pITS = (ITaskScheduler *) HASH_GET_IV( pHvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( NULL != pITS )
+    {
+        CUString szuBuffer( pszKey );
+        ITask *pTask = NULL;
+        BOOL fNewTask = FALSE;
+
+        //  First check if the element already exists. If so then modify it
+        //  otherwise create a new task
+
+        if( SUCCEEDED( pITS->Activate( szuBuffer, IID_ITask, (IUnknown**) &pTask ) ) )
+        {
+            fResult = TRUE;
+            pTask->Release();
+        }
+    }
+        
+/*        
+        
+        
+        
+        IEnumWorkItems *pEnum = NULL;
+        if( SUCCEEDED( pITS->Enum( &pEnum ) ) )
+        {
+            
+            LPWSTR *pszwNames;
+            DWORD dwTasks = 0;
+            DWORD dwTasksToFetch = TOTAL_TASKS_TO_RETRIEVE;
+            CUString szuName;
+
+            while( SUCCEEDED( pEnum->Next( dwTasksToFetch,
+                                            &pszwNames,
+                                            &dwTasks ) )
+                                        && ( 0 != dwTasks )
+                                        && ( FALSE == fResult ) )
+            {
+                DWORD dwIndex = 0;
+                while( dwIndex < dwTasks )
+                {
+                    szuName = pszwNames[ dwIndex ];
+                    CoTaskMemFree( pszwNames[ dwIndex++ ] );
+
+                    if( ( FALSE == fResult ) && ( 0 == _tcsicmp( szuName, pszKey ) ) )
+                    {
+                        fResult = TRUE; 
+                    }
+                }
+                CoTaskMemFree( pszwNames );
+            }
+            pEnum->Release();
+        }    
+    }
+*/
+
+    EXTENSION_RETURN_BOOL( fResult );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_TIE_CLEAR)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITaskScheduler *pITS = NULL;
+    HRESULT hr = ERROR_SUCCESS;
+    DWORD dwTotal = 0;
+	
+	if( 1 != items )
+	{
+		croak( "Usage: " EXTENSION  "::CLEAR( $Self )\n" );
+    }
+
+#ifdef CLEAR_WORK_ITEMS
+    //  This is VERY dangerous as it will clear out all of the
+    //  registered work items.  BE CAREFULL IF YOU USE THIS!!!
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pITS = (ITaskScheduler *) HASH_GET_IV( hvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( NULL != pITS )
+    {
+        IEnumWorkItems *pEnum = NULL;
+        if( SUCCEEDED( pITS->Enum( &pEnum ) )
+        {
+            LPWSTR *pszwNames;
+            DWORD dwTasks = 0;
+            DWORD dwTasksToFetch = TOTAL_TASKS_TO_RETRIEVE;
+            CUString szuName;
+     
+            while( SUCCEEDED( pIEnum->Next( dwTasksToFetch,
+                                            &pszwNames,
+                                            &dwTasks ) )
+                                        && ( 0 != dwTasks ) )
+            {
+                while( dwTasks )
+                {
+                    szuName = pszwNames[ --dwTasks ];
+                    CoTaskMemFree( pszwNames[ dwTasks ] );
+
+                    dwTotal++;
+                    hr = pITS->Delete( pszuName );
+                }
+                CoTaskMemFree( pszwNames );
+            }
+            pIEnum->Release();
+        }    
+    }
+#endif  //  CLEAR_WORK_ITEMS
+
+    EXTENSION_RETURN_BOOL( SUCCEEDED( hr ) );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_TIE_DELETE)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    ITaskScheduler *pITS = NULL;
+    HRESULT hr;
+    CUString szuName;
+	
+	if( 2 != items )
+	{
+		croak( "Usage: " EXTENSION  "::DELETE( $Self, $Key )\n" );
+    }
+
+	//	DELETE	
+	pHvSelf = (HV*) SvRV( ST( 0 ) );
+	szuName = SvPV( ST( 1 ), na);
+
+    pITS = (ITaskScheduler *) HASH_GET_IV( pHvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( NULL != pITS )
+    {
+        hr = pITS->Delete( szuName );
+    }
+
+    EXTENSION_RETURN_BOOL( SUCCEEDED( hr ) );
+}
+
+///////////////////////////////////////////////////////////////////////
+//	
+XS(XS_Win32__Scheduler_TIE_DESTROY)
+{
+	dXSARGS;
+    EXTENSION_VARS;
+    HV		*pHvSelf;
+    SV      *pSvSelf = NULL;
+    ITaskScheduler *pITS = NULL;
+	
+	if( 1 != items )
+	{
+		croak( "Usage: " EXTENSION  "::DESTROY( $Self )\n" );
+    }
+    
+	//	DESTROY
+    pHvSelf = (HV*) SvRV( ST( 0 ) );
+    pITS = (ITaskScheduler *) HASH_GET_IV( pHvSelf, KEYWORD_SCHEDULER_INTERFACE );
+    if( NULL != pITS )
+    {
+        pITS->Release();
+    }
+
+    XSRETURN_EMPTY;
+}

@@ -1,0 +1,3 @@
+LIBRARY Scheduler
+EXPORTS
+	boot_Win32__Scheduler
